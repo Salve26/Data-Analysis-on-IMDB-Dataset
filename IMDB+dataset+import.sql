@@ -1,204 +1,162 @@
-#!/usr/bin/env python3
-"""
-sql_to_csv.py
+-- Use/create database
+DROP DATABASE IF EXISTS imdb;
+CREATE DATABASE IF NOT EXISTS imdb CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
+USE imdb;
 
-Usage:
-    # default (no args): reads ./import.sql and writes CSVs into current directory
-    python3 sql_to_csv.py
+-- CREATE TABLES
+DROP TABLE IF EXISTS movie;
+CREATE TABLE movie
+ (
+  id VARCHAR(10) NOT NULL,
+  title VARCHAR(200) DEFAULT NULL,
+  year INT DEFAULT NULL,
+  date_published DATE DEFAULT NULL,
+  duration INT,
+  country VARCHAR(250),
+  worlwide_gross_income VARCHAR(30),
+  languages VARCHAR(200),
+  production_company VARCHAR(200),
+  PRIMARY KEY (id)
+);
 
-    # or explicitly:
-    python3 sql_to_csv.py import.sql .
+DROP TABLE IF EXISTS genre;
+CREATE TABLE genre
+ (
+    movie_id VARCHAR(10),
+    genre VARCHAR(50),
+    PRIMARY KEY (movie_id, genre)
+);
 
-This script:
- - Scans the SQL file for "INSERT INTO <table> VALUES (...),(...),...;" blocks
- - Parses each tuple robustly (quotes, escaped quotes, commas inside quoted strings, NULL)
- - Writes/appends rows into CSV files: ./<table>.csv
- - Uses known header mappings for your IMDb schema; otherwise falls back to col1..colN
-"""
+DROP TABLE IF EXISTS director_mapping;
+CREATE TABLE director_mapping
+ (
+    movie_id VARCHAR(10),
+    name_id VARCHAR(10),
+    PRIMARY KEY (movie_id, name_id)
+);
 
-import sys
-import os
-import re
-import csv
-import argparse
+DROP TABLE IF EXISTS role_mapping;
+CREATE TABLE role_mapping
+ (
+    movie_id VARCHAR(10) NOT NULL,
+    name_id VARCHAR(10) NOT NULL,
+    category VARCHAR(20),
+    PRIMARY KEY (movie_id, name_id)
+);
 
-# ---------------------------
-# Configure known table headers
-# ---------------------------
-HEADERS = {
-    "movie": ["id", "title", "year", "date_published", "duration", "country", "worlwide_gross_income", "languages", "production_company"],
-    "genre": ["movie_id", "genre"],
-    "director_mapping": ["movie_id", "name_id"],
-    "role_mapping": ["movie_id", "name_id", "category"],
-    "names": ["id", "name", "height", "date_of_birth", "known_for_movies"],
-    "ratings": ["movie_id", "avg_rating", "total_votes", "median_rating"],
-}
+DROP TABLE IF EXISTS names;
+CREATE TABLE names
+ (
+  id varchar(10) NOT NULL,
+  name varchar(100) DEFAULT NULL,
+  height int DEFAULT NULL,
+  date_of_birth date DEFAULT NULL,
+  known_for_movies varchar(255) DEFAULT NULL,
+  PRIMARY KEY (id)
+);
 
-# ---------------------------
-# Parsing helpers (robust)
-# ---------------------------
-def split_top_level_tuples(s):
-    tuples = []
-    i = 0
-    n = len(s)
-    while i < n:
-        while i < n and s[i] != '(':
-            i += 1
-        if i >= n:
-            break
-        i += 1
-        start = i
-        in_single = False
-        prev = ''
-        depth = 1
-        while i < n:
-            ch = s[i]
-            if ch == "'" and prev != '\\':
-                in_single = not in_single
-            elif ch == ')' and not in_single:
-                depth -= 1
-                if depth == 0:
-                    tuples.append(s[start:i])
-                    i += 1
-                    break
-            elif ch == '(' and not in_single:
-                depth += 1
-            prev = ch
-            i += 1
-    return tuples
+DROP TABLE IF EXISTS ratings;
+CREATE TABLE ratings
+(
+    movie_id VARCHAR(10) NOT NULL,
+    avg_rating DECIMAL(3,1),
+    total_votes INT,
+    median_rating INT,
+    PRIMARY KEY (movie_id)
+);
 
-def split_fields(tuple_content):
-    fields = []
-    cur = []
-    in_single = False
-    i = 0
-    prev = ''
-    s = tuple_content
-    while i < len(s):
-        ch = s[i]
-        if ch == "'" and prev != '\\':
-            in_single = not in_single
-            cur.append(ch)
-        elif ch == ',' and not in_single:
-            fields.append(''.join(cur).strip())
-            cur = []
-        else:
-            cur.append(ch)
-        prev = ch
-        i += 1
-    if cur:
-        fields.append(''.join(cur).strip())
-    return fields
+-- ============================
+-- LOAD CSV FILES from dataset/
+-- ============================
 
-def clean_field(f):
-    if f is None:
-        return ""
-    ff = f.strip()
-    if ff == '':
-        return ''
-    if ff.lower() == 'null':
-        return ''
-    if ff.startswith("'") and ff.endswith("'") and len(ff) >= 2:
-        inner = ff[1:-1]
-        inner = inner.replace("''", "'")
-        inner = inner.replace("\\'", "'")
-        inner = inner.replace('\\\\', '\\')
-        return inner
-    if ff.startswith('"') and ff.endswith('"') and len(ff) >= 2:
-        inner = ff[1:-1]
-        inner = inner.replace('\\"', '"')
-        return inner
-    return ff
+LOAD DATA LOCAL INFILE 'dataset/movie.csv'
+INTO TABLE movie
+CHARACTER SET utf8mb4
+FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED BY '"'
+LINES TERMINATED BY '\n'
+IGNORE 1 LINES
+(@id, @title, @year, @release_date, @runtime, @country, @gross, @language, @production)
+SET
+  id = NULLIF(@id, ''),
+  title = NULLIF(@title, ''),
+  year = NULLIF(@year, '') + 0,
+  date_published = NULLIF(STR_TO_DATE(NULLIF(@release_date, ''), '%Y-%m-%d'), ''),
+  duration = NULLIF(@runtime, '') + 0,
+  country = NULLIF(@country, ''),
+  worlwide_gross_income = NULLIF(@gross, ''),
+  languages = NULLIF(@language, ''),
+  production_company = NULLIF(@production, '');
 
-# ---------------------------
-# SQL scanning
-# ---------------------------
-INSERT_RE = re.compile(
-    r"INSERT\s+INTO\s+`?([A-Za-z0-9_]+)`?\s+VALUES\s*(\(.+?\))\s*;",
-    flags=re.IGNORECASE | re.DOTALL
-)
+LOAD DATA LOCAL INFILE 'dataset/genre.csv'
+INTO TABLE genre
+CHARACTER SET utf8mb4
+FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED BY '"'
+LINES TERMINATED BY '\n'
+IGNORE 1 LINES
+(@movie_id, @genre)
+SET
+  movie_id = NULLIF(@movie_id, ''),
+  genre = NULLIF(@genre, '');
 
-def extract_inserts(sql_text):
-    inserts = []
-    for m in INSERT_RE.finditer(sql_text):
-        table = m.group(1)
-        values_text = m.group(2)
-        inserts.append((table, values_text))
-    return inserts
+LOAD DATA LOCAL INFILE 'dataset/director_mapping.csv'
+INTO TABLE director_mapping
+CHARACTER SET utf8mb4
+FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED BY '"'
+LINES TERMINATED BY '\n'
+IGNORE 1 LINES
+(@movie_id, @name_id)
+SET
+  movie_id = NULLIF(@movie_id, ''),
+  name_id = NULLIF(@name_id, '');
 
-# ---------------------------
-# CSV writing helpers
-# ---------------------------
-def ensure_csv_writer(table, out_dir, header):
-    path = os.path.join(out_dir, f"{table}.csv")
-    exists = os.path.exists(path)
-    f = open(path, "a", encoding="utf-8", newline='')
-    writer = csv.writer(f, quoting=csv.QUOTE_MINIMAL)
-    if not exists:
-        writer.writerow(header)
-    return f, writer
+LOAD DATA LOCAL INFILE 'dataset/role_mapping.csv'
+INTO TABLE role_mapping
+CHARACTER SET utf8mb4
+FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED BY '"'
+LINES TERMINATED BY '\n'
+IGNORE 1 LINES
+(@movie_id, @name_id, @category)
+SET
+  movie_id = NULLIF(@movie_id, ''),
+  name_id = NULLIF(@name_id, ''),
+  category = NULLIF(@category, '');
 
-# ---------------------------
-# Main processing
-# ---------------------------
-def process_sql_file(sql_path, out_dir):
-    with open(sql_path, "r", encoding="utf-8") as f:
-        sql_text = f.read()
+LOAD DATA LOCAL INFILE 'dataset/names.csv'
+INTO TABLE names
+CHARACTER SET utf8mb4
+FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED BY '"'
+LINES TERMINATED BY '\n'
+IGNORE 1 LINES
+(@id, @name, @height, @dob, @known_for)
+SET
+  id = NULLIF(@id, ''),
+  name = NULLIF(@name, ''),
+  height = NULLIF(@height, '') + 0,
+  date_of_birth = NULLIF(STR_TO_DATE(NULLIF(@dob, ''), '%Y-%m-%d'), ''),
+  known_for_movies = NULLIF(@known_for, '');
 
-    inserts = extract_inserts(sql_text)
-    if not inserts:
-        print("No INSERT INTO ... VALUES(...) ; blocks found in file.")
-        return
+LOAD DATA LOCAL INFILE 'dataset/ratings.csv'
+INTO TABLE ratings
+CHARACTER SET utf8mb4
+FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED BY '"'
+LINES TERMINATED BY '\n'
+IGNORE 1 LINES
+(@movie_id, @avg_rating, @total_votes, @median_rating)
+SET
+  movie_id = NULLIF(@movie_id, ''),
+  avg_rating = NULLIF(@avg_rating, '') + 0,
+  total_votes = NULLIF(@total_votes, '') + 0,
+  median_rating = NULLIF(@median_rating, '') + 0;
 
-    open_files = {}
-
-    try:
-        for table, values_text in inserts:
-            header = HEADERS.get(table)
-            tuples = split_top_level_tuples(values_text)
-            if not tuples:
-                print(f"Warning: no tuples parsed for table {table}. Skipping.")
-                continue
-
-            if header is None:
-                first_fields = split_fields(tuples[0])
-                header = [f"col{idx+1}" for idx in range(len(first_fields))]
-                HEADERS[table] = header
-
-            if table not in open_files:
-                fh, writer = ensure_csv_writer(table, out_dir, header)
-                open_files[table] = (fh, writer)
-            else:
-                fh, writer = open_files[table]
-
-            for t in tuples:
-                raw_fields = split_fields(t)
-                cleaned = [clean_field(x) for x in raw_fields]
-                if len(cleaned) < len(header):
-                    cleaned += [''] * (len(header) - len(cleaned))
-                elif len(cleaned) > len(header):
-                    cleaned = cleaned[:len(header)]
-                writer.writerow(cleaned)
-    finally:
-        for fh, _ in open_files.values():
-            fh.close()
-
-    print("Done. CSVs written to:", os.path.abspath(out_dir))
-
-# ---------------------------
-# CLI
-# ---------------------------
-def main():
-    parser = argparse.ArgumentParser(description="Convert SQL INSERT ... VALUES(...) blocks into per-table CSV files.")
-    parser.add_argument("sql_file", nargs='?', default="import.sql", help="Input SQL file (default: import.sql)")
-    parser.add_argument("out_dir", nargs='?', default=".", help="Output directory for CSV files (default: current directory)")
-    args = parser.parse_args()
-
-    if not os.path.exists(args.sql_file):
-        print("SQL file not found:", args.sql_file)
-        sys.exit(1)
-    os.makedirs(args.out_dir, exist_ok=True)
-    process_sql_file(args.sql_file, args.out_dir)
-
-if __name__ == "__main__":
-    main()
+-- Optional: check counts
+SELECT 'movie' AS tbl, COUNT(*) AS rows FROM movie
+UNION ALL
+SELECT 'genre', COUNT(*) FROM genre
+UNION ALL
+SELECT 'director_mapping', COUNT(*) FROM director_mapping
+UNION ALL
+SELECT 'role_mapping', COUNT(*) FROM role_mapping
+UNION ALL
+SELECT 'names', COUNT(*) FROM names
+UNION ALL
+SELECT 'ratings', COUNT(*) FROM ratings;
